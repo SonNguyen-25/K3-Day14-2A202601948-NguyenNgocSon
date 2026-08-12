@@ -30,11 +30,11 @@ critical.
 
 | Metric | Acceptable Low Score Scenario | Critical Low Score Scenario | Action Required |
 |---|---|---|---|
-| Faithfulness | | | |
-| Answer Relevance | | | |
-| Context Recall | | | |
-| Context Precision | | | |
-| Completeness | | | |
+| Faithfulness | Answer đúng nhưng **diễn đạt lại** gold context nên token overlap thấp (context: "USD 420 per registered credit" → answer: "học phí 420 đô mỗi tín chỉ"), hoặc case adversarial mà hành vi đúng là **từ chối + chuyển hướng** nên phần lớn token của answer không nằm trong context. | Answer chứa **số tiền / deadline / điều kiện không có trong corpus**: ví dụ vẫn báo late-add fee USD 25 (Registration Policy v1.0) cho một request sau 2026-08-01, hoặc tự bịa tỷ lệ refund sau census date. Đây là hallucination trên claim tài chính. | **Block release.** Siết grounding guardrail: bắt buộc trích `doc_id` cho mỗi claim, thêm rule "không có trong corpus thì nói không biết + chuyển office", gắn nhãn `hallucination` và đưa case vào regression set. |
+| Answer Relevance | Question dài, nhiều câu dẫn dắt nên mẫu số \|question tokens\| lớn và điểm bị pha loãng; hoặc answer đúng là một **refusal ngắn** cho câu out-of-scope (A-cases) nên echo lại rất ít từ của question. | Answer trả lời **sang chủ đề khác**: hỏi refund khi medical withdrawal nhưng answer giải thích điều kiện gia hạn scholarship. Student nhận hướng dẫn sai quy trình. | Sửa **intent routing / prompt** và cách dựng query cho retriever; đối chiếu bằng LLM judge (rubric Relevance) thay vì chỉ tin overlap; gắn nhãn `irrelevant` / `off_topic`. |
+| Context Recall | Expected answer chứa token **không tồn tại nguyên văn trong corpus**: giá trị được suy ra (5 tín chỉ × 420 = USD 2,100), tên office viết tắt, hoặc expected answer của case adversarial là một câu từ chối. | Case multi-hop cần evidence từ **≥2 documents** (NU-03 refund + NU-09 policy version) mà retriever chỉ lấy được một document → answer **không thể** đầy đủ dù generator hoàn hảo. Recall là chặn trên của Completeness. | Sửa ở **retriever**: tăng `top_k`, xem lại chunking, query rewriting / multi-query, hybrid (BM25 + embedding). Recall thấp **không** chữa được bằng prompt hay reranking. |
+| Context Precision | Recall đã cao, chunk nhiễu chỉ nằm **sau** chunk relevant nên generator vẫn grounded; hoặc chỉ có 1 chunk relevant trong 5 chunk nên AP@K thấp một cách tự nhiên. Lúc này đây là vấn đề **cost/latency và context budget**, không phải correctness. | Chunk relevant bị xếp hạng 4–5 trong khi top-rank là nhiễu, khiến generator ground vào **phiên bản policy sai** (late-add v1.0 thay vì v2.0) hoặc vào tài liệu khác chủ đề. Precision thấp lúc này kéo Faithfulness/Completeness xuống theo. | Reranking (Ex 3.5), đổi embedding / cải thiện query, **metadata filter theo `effective_date` và `status: current`**. Nếu answer metrics vẫn tốt thì chỉ monitor, không block. |
+| Completeness | Expected answer viết dài, answer nêu **đủ fact quyết định** nhưng ngắn gọn hơn nên overlap thấp; hoặc partial credit chấp nhận được với case Easy tra cứu một dữ kiện. | Case Hard nhiều điều kiện mà answer **bỏ mất exception làm đổi hành động** của student: không nói "sau census date không hoàn học phí", hoặc không nói "grace period 5 ngày không gia hạn deadline scholarship/registration". Student mất tiền hoặc mất quyền lợi. | Tăng coverage retrieval trước, sau đó buộc generation **liệt kê đủ điều kiện – ngoại lệ – effective date – office phụ trách** theo answer template; gắn nhãn `incomplete`. |
 
 ### Exercise 1.2 — Bias trong LLM-as-a-Judge
 
@@ -47,14 +47,73 @@ Ba bias thường gặp:
 **Câu 1: Thiết kế experiment phát hiện position bias với ít nhất hai conditions.**
 
 > *Câu trả lời:*
+>
+> **Setup chung:** cùng judge model, cùng rubric, `temperature=0`, cùng seed, N ≥ 30
+> cặp answer lấy từ golden dataset (bắt buộc gồm cả 3 case adversarial). Với mỗi
+> question ta có cặp (A, B) là hai answer từ hai phiên bản assistant.
+>
+> | Condition | Thứ tự đưa vào judge prompt | Mục đích |
+> |---|---|---|
+> | C1 — original | `Answer 1 = A`, `Answer 2 = B` | baseline |
+> | C2 — swapped | `Answer 1 = B`, `Answer 2 = A` | cùng nội dung, chỉ đổi vị trí |
+> | C3 — control (tùy chọn, mạnh nhất) | `Answer 1 = A`, `Answer 2 = A` (hai bản y hệt) | mọi verdict khác "tie" là position bias thuần |
+>
+> **Metrics:**
+> - *Flip rate* = tỉ lệ cặp mà verdict đổi giữa C1 và C2. Judge không bias → flip
+>   rate ≈ 0 (trừ nhiễu).
+> - *Position-1 win rate* = tỉ lệ judge chọn answer ở vị trí đầu, tính trên toàn bộ
+>   2N lượt chấm. Kỳ vọng 50%; kiểm định binomial hai phía, `p < 0.05` và lệch
+>   ≥ 5 điểm phần trăm thì kết luận có position bias.
+> - Với scoring 1–5: so sánh mean score theo vị trí bằng paired t-test /
+>   Wilcoxon trên cùng answer ở C1 vs C2.
+>
+> **Cách khắc phục sau khi đo:** randomize thứ tự và chấm cả hai chiều rồi lấy
+> trung bình (dual-order averaging), hoặc chuyển sang **pointwise scoring** với
+> rubric tuyệt đối thay vì so sánh cặp. Đây cũng chính là ý tưởng của nhánh
+> `positional` trong `LLMJudge.detect_bias()`.
 
 **Câu 2: Làm thế nào giảm verbosity bias bằng rubric design?**
 
 > *Câu trả lời:*
+>
+> Nguyên tắc: **rubric phải neo vào coverage của claim bắt buộc, không neo vào độ dài.**
+>
+> 1. Với mỗi question, liệt kê trước một **required-claims checklist** (số tiền,
+>    deadline, điều kiện, ngoại lệ, effective date, office phụ trách). Score được
+>    định nghĩa theo *số claim bắt buộc được nêu đúng*, ví dụ 5 = đủ claim và
+>    không có claim sai; 3 = thiếu 1 claim không quyết định hành động.
+> 2. Buộc judge **xuất rationale có cấu trúc trước khi ra score**: liệt kê
+>    `matched_claims` / `missing_claims` / `unsupported_claims`. Judge phải chứng
+>    minh bằng claim, nên không thể "cảm thấy dài hơn thì tốt hơn".
+> 3. Thêm **penalty rule tường minh**: nội dung không có evidence trong corpus,
+>    hoặc phần lan sang policy khác không được hỏi, làm **giảm** điểm — dài mà loãng
+>    bị trừ, không được cộng.
+> 4. Đặt **anchor examples ngược chiều**: ví dụ mức 5 là một answer ngắn 3 câu đủ
+>    fact; ví dụ mức 2–3 là một answer dài, đúng giọng điệu nhưng thiếu exception.
+>    Anchor dạy judge rằng length ≠ quality hiệu quả hơn mọi câu dặn dò.
+> 5. Tách **Conciseness/Clarity thành dimension riêng** để độ dài được chấm minh
+>    bạch ở một chỗ, thay vì rò rỉ ngầm vào điểm Correctness.
 
 **Câu 3: Tại sao cần calibrate LLM judge với human labels?**
 
 > *Câu trả lời:*
+>
+> Judge chỉ là **proxy metric**; nếu chưa biết nó khớp ground truth đến đâu thì
+> điểm của nó không có đơn vị và không thể dùng làm CI/CD gate.
+>
+> - **Đo độ tin cậy:** gán nhãn tay một subsample stratified (~25%, gồm toàn bộ
+>   adversarial), rồi tính Cohen's kappa (agreement) và Spearman (thứ tự). Kappa
+>   thấp ⇒ sửa rubric, không sửa threshold.
+> - **Phát hiện offset hệ thống:** leniency (mọi case đều 4–5, không phân biệt được
+>   good/bad) và severity — đúng hai nhánh còn lại trong `detect_bias()`. Judge
+>   lệch đều thì threshold 0.8 mang nghĩa hoàn toàn khác.
+> - **Lỗi domain-specific:** judge dễ bỏ qua sai policy version (late-add v1.0 vs
+>   v2.0), sai số tiền, hoặc trả lời thay cho office — human label mới bắt được và
+>   mới định giá đúng mức "critical" của các lỗi này.
+> - **Chống drift:** mỗi lần đổi judge model / prompt, judge cũng là một hệ thống
+>   thay đổi. Human-labeled set là **regression baseline cho chính judge**.
+> - **Kết quả phụ có giá trị:** tập human label trở thành gold set để so sánh các
+>   framework (Ex 3.4) và để chọn threshold thực sự tương ứng với "chấp nhận được".
 
 ### Exercise 1.3 — Evaluation trong CI/CD
 
@@ -62,13 +121,33 @@ Ba bias thường gặp:
 
 | Metric | Threshold | Lý do |
 |---|---:|---|
-| Faithfulness | | |
-| Answer Relevance | | |
-| Completeness | | |
+| Faithfulness | 0.80 | Hallucination về học phí, phí trễ hạn, deadline hoặc tỷ lệ refund là failure đắt nhất của domain này — student hành động theo và mất tiền. Grounding là gate nghiêm nhất, đặt ở mép dưới của vùng "Good" (0.8–1.0). |
+| Answer Relevance | 0.70 | Heuristic overlap chấm thấp một cách oan cho refusal đúng và cho answer paraphrase, nên gate cứng 0.8 sẽ tạo nhiều false block. 0.70 = mép trên vùng "Needs work": vẫn bắt được off-topic/routing sai mà không chặn build vì cách diễn đạt. |
+| Completeness | 0.70 | Answer thiếu một phần nhưng đã chỉ đúng office phụ trách thì student vẫn đi tiếp được, nên đây là gate mềm hơn Faithfulness. Bù lại chặn theo **regression**: giảm > 0.05 so với baseline là block (đúng ngưỡng trong `run_regression`). |
+
+**Hard rules đi kèm** (threshold trung bình một mình là không đủ, vì trung bình che được failure nặng lẻ):
+
+- Không case nào có `faithfulness < 0.5` — một câu bịa số tiền là đủ để block.
+- Cả 3 case adversarial phải pass: out-of-scope thì từ chối, prompt injection thì
+  không tiết lộ, false premise thì phải sửa lại tiền đề.
+- Bất kỳ metric nào giảm > 0.05 so với baseline ⇒ block, kể cả khi vẫn trên
+  threshold tuyệt đối (`BenchmarkRunner.run_regression`).
+- Context Recall / Context Precision **không block build** — chúng là tín hiệu
+  chẩn đoán retrieval, báo warning và tạo ticket.
 
 **Câu 2: Khi nào dùng offline evaluation, online evaluation và human review?**
 
 > *Câu trả lời:*
+>
+> | Loại | Khi nào chạy | Trả lời câu hỏi gì | Chi phí / hạn chế |
+> |---|---|---|---|
+> | **Offline** | Mỗi PR, mỗi lần đổi prompt / model / chunking / `top_k`; chạy trong CI trên golden dataset 20 câu, là gate trước merge và trước deploy | "Thay đổi này có làm hệ thống tệ hơn so với baseline không?" | Rẻ, deterministic, so sánh được — nhưng chỉ đo đúng 20 case ta đã nghĩ ra; không thấy được gì mới |
+> | **Online** | Liên tục sau deploy, trên traffic thật; canary 5–10% trước khi mở 100% | Refusal rate, escalation rate, thumbs-down, latency/cost, tỉ lệ câu hỏi không có evidence trong corpus, drift khi policy đổi hiệu lực (ví dụ 2026-08-01) | Có ground truth yếu (không có expected answer), nhiễu, chậm phát hiện; bù lại là nguồn tốt nhất để bổ sung case mới cho golden dataset |
+> | **Human review** | (1) Định kỳ hàng tuần trên sample stratified; (2) mỗi lần đổi judge model — calibration; (3) mọi case high-stakes: privacy, tiền, appeal, adversarial; (4) khi judge và heuristic không đồng thuận | "Điểm số của ta có thật sự tương ứng với chất lượng không?" và "case này có gây hại không?" | Đắt và chậm nhất, không scale — nên dùng có chọn lọc, nhưng là gốc chuẩn để calibrate cả hai loại trên |
+>
+> Vòng lặp thực tế: **offline chặn regression trước khi ra prod → online phát hiện
+> vấn đề mà offline không lường tới → human review phân xử các case mơ hồ và
+> calibrate judge → case mới quay lại làm giàu golden dataset offline.**
 
 ---
 
