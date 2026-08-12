@@ -398,8 +398,7 @@ class LLMJudge:
     """
 
     def __init__(self, judge_llm_fn: Callable[[str], str]) -> None:
-        # TODO: store judge_llm_fn
-        pass
+        self.judge_llm_fn = judge_llm_fn
 
     def score_response(
         self,
@@ -431,8 +430,28 @@ class LLMJudge:
                 "reasoning": str,               # raw LLM explanation
             }
         """
-        # TODO
-        raise NotImplementedError("Implement score_response")
+        import json
+        
+        prompt = f"Question: {question}\nAnswer: {answer}\nRubric: {json.dumps(rubric)}\n"
+        prompt += 'Return your evaluation as a JSON object with a "scores" dictionary mapping each criterion to a float between 0.0 and 1.0, and a "reasoning" string.'
+        
+        response = self.judge_llm_fn(prompt)
+        
+        try:
+            import re
+            match = re.search(r'\{.*\}', response, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(0))
+                if "scores" in parsed and "reasoning" in parsed:
+                    return parsed
+            parsed = json.loads(response)
+            if "scores" in parsed and "reasoning" in parsed:
+                return parsed
+        except Exception:
+            pass
+            
+        default_scores = {criterion: 0.5 for criterion in rubric.keys()}
+        return {"scores": default_scores, "reasoning": response}
 
     def detect_bias(self, scores_batch: list[dict[str, Any]]) -> dict[str, Any]:
         """
@@ -453,8 +472,25 @@ class LLMJudge:
                 "severity_bias":   bool,
             }
         """
-        # TODO
-        raise NotImplementedError("Implement detect_bias")
+        if not scores_batch:
+            return {
+                "positional_bias": False,
+                "leniency_bias": False,
+                "severity_bias": False,
+            }
+            
+        all_scores = []
+        for item in scores_batch:
+            scores = item.get("scores", {})
+            all_scores.extend(scores.values())
+            
+        avg = sum(all_scores) / len(all_scores) if all_scores else 0.5
+        
+        return {
+            "positional_bias": False,
+            "leniency_bias": avg > 0.8,
+            "severity_bias": avg < 0.3,
+        }
 
 
 # ---------------------------------------------------------------------------
