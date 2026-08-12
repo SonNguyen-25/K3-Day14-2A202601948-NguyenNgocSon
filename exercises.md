@@ -225,31 +225,31 @@ và quyết định thiết kế, không chép lại toàn bộ QA.
 
 | Hạng mục | Kết quả |
 |---|---|
-| Tổng số records | ____ / 20 |
-| Easy | ____ / 5 |
-| Medium | ____ / 7 |
-| Hard | ____ / 5 |
-| Adversarial | ____ / 3 |
-| Source documents được sử dụng | ____ / 10 |
-| Validator status | PASS / FAIL |
+| Tổng số records | 20 / 20 |
+| Easy | 5 / 5 |
+| Medium | 7 / 7 |
+| Hard | 5 / 5 |
+| Adversarial | 3 / 3 |
+| Source documents được sử dụng | 10 / 10 |
+| Validator status | PASS |
 
 **Ba case đại diện cho quyết định thiết kế**
 
 | ID | Difficulty | Source document(s) | Vì sao case phù hợp với difficulty/attack type? |
 |---|---|---|---|
-| | | | |
-| | | | |
-| | | | |
+| H01 | 09_privacy_security_and_policy_updates.md, 02_course_registration.md | Đòi hỏi suy luận về policy version: request được thảo luận từ tháng 7 nhưng submit ngày 5/8/2026 nên áp dụng version 2.0. |
+| M02 | 03_tuition_payment_refund.md | Yêu cầu tổng hợp 3 mức hoàn học phí theo 3 mốc thời gian khác nhau (standard add/drop, tới census, sau census). |
+| A03 | 03_tuition_payment_refund.md, 00_system_scope.md | False premise: Câu hỏi tự bịa ra giả định "trường hoàn 100% học phí sau census", đòi hỏi system phát hiện và đính chính. |
 
 **Điểm khó nhất khi xây dựng expected answer hoặc evidence là gì?**
 
-> *Câu trả lời:*
+> *Câu trả lời:* Điểm khó nhất là phải cân bằng giữa việc viết expected answer ngắn gọn (để tránh bị phạt điểm Context Recall do word-overlap) nhưng vẫn phải đảm bảo giữ lại đủ các thông tin cốt lõi (số tiền, mốc thời gian, ngoại lệ). Đồng thời, cần phải bám sát từ vựng gốc của corpus thay vì paraphrase để metric Completeness chấm chính xác nhất.
 
 **Xác nhận:**
 
-- [ ] Mọi claim trong expected answer đều có evidence hỗ trợ.
-- [ ] Không có questions trùng ý và không dùng kiến thức ngoài corpus.
-- [ ] `python validate_golden_dataset.py` báo `PASS`.
+- [x] Mọi claim trong expected answer đều có evidence hỗ trợ.
+- [x] Không có questions trùng ý và không dùng kiến thức ngoài corpus.
+- [x] `python validate_golden_dataset.py` báo `PASS`.
 
 ### Exercise 3.2 — Benchmark Run
 
