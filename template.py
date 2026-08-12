@@ -695,8 +695,11 @@ class FailureAnalyzer:
             dict mapping failure_type → count.
             Example: {"hallucination": 3, "irrelevant": 2, "incomplete": 5}
         """
-        # TODO
-        raise NotImplementedError("Implement categorize_failures")
+        categories = {}
+        for f in failures:
+            if f.failure_type:
+                categories[f.failure_type] = categories.get(f.failure_type, 0) + 1
+        return categories
 
     def find_root_cause(self, failure: EvalResult) -> str:
         """
@@ -708,8 +711,22 @@ class FailureAnalyzer:
             "Answer is missing key information — increase context window or improve generation"
             "Multiple issues detected — review full pipeline"
         """
-        # TODO: compare faithfulness, relevance, completeness, return appropriate string
-        raise NotImplementedError("Implement find_root_cause")
+        scores = {
+            "Context is missing or irrelevant — improve retrieval": failure.faithfulness,
+            "Answer does not address the question — improve prompt clarity": failure.relevance,
+            "Answer is missing key information — increase context window or improve generation": failure.completeness
+        }
+        
+        failed_count = sum(1 for s in scores.values() if s < 0.5)
+        if failed_count > 1:
+            return "Multiple issues detected — review full pipeline"
+            
+        min_score = min(scores.values())
+        for cause, score in scores.items():
+            if score == min_score:
+                return cause
+                
+        return "Multiple issues detected — review full pipeline"
 
     def generate_improvement_log(self, failures: list, suggestions: list[str]) -> str:
         """Generate a Markdown table logging failures and improvement actions.
@@ -728,7 +745,15 @@ class FailureAnalyzer:
 
         TODO: Build markdown table with failure details + matched suggestions
         """
-        raise NotImplementedError
+        log = "| Failure ID | Type | Root Cause | Suggested Fix | Status |\n"
+        log += "|------------|------|------------|---------------|--------|\n"
+        for i, failure in enumerate(failures):
+            fid = f"F{i+1:03d}"
+            ftype = failure.failure_type or "Unknown"
+            rcause = self.find_root_cause(failure)
+            sfix = suggestions[i] if i < len(suggestions) else "Investigate further"
+            log += f"| {fid} | {ftype} | {rcause} | {sfix} | Open |\n"
+        return log
 
     def generate_improvement_suggestions(
         self, failures: list[EvalResult]
@@ -746,8 +771,25 @@ class FailureAnalyzer:
         Returns:
             List of at least 3 suggestion strings (or fewer if failures is empty).
         """
-        # TODO: analyze categorized failures and return suggestions
-        raise NotImplementedError("Implement generate_improvement_suggestions")
+        if not failures:
+            return []
+            
+        categories = self.categorize_failures(failures)
+        suggestions = []
+        
+        if categories.get("hallucination", 0) > 0:
+            suggestions.append("Implement hallucination checker to filter unsupported claims")
+        if categories.get("irrelevant", 0) > 0:
+            suggestions.append("Improve prompt clarity and intent detection")
+        if categories.get("incomplete", 0) > 0:
+            suggestions.append("Increase chunk size in RAG pipeline to reduce context fragmentation")
+        if categories.get("off_topic", 0) > 0:
+            suggestions.append("Add guardrails to handle out-of-scope queries effectively")
+            
+        while len(suggestions) < 3:
+            suggestions.append("Add few-shot examples showing complete answers to improve completeness")
+            
+        return suggestions
 
 
 # ---------------------------------------------------------------------------
